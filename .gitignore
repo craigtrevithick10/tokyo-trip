@@ -1,0 +1,5 @@
+# only the map page is published
+*
+!index.html
+!.gitignore
+!.nojekyll
