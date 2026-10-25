@@ -67,6 +67,15 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 .panel-foot { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; color: var(--muted); font-size: 11px; }
 .panel-foot button { font: inherit; font-size: 12px; background: var(--chip); color: var(--ink); border: 0; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
 .toggle-panel { display: none; }
+.area-pick { display: grid; gap: 4px; margin-bottom: 10px; }
+.area-pick label { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.area-pick select { font: 500 14px var(--body); padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); width: 100%; }
+.area-pick select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.area-list { display: grid; gap: 1px; margin: -2px 0 10px; max-height: 280px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 4px 6px 6px; }
+.area-list h4 { margin: 8px 4px 2px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.area-list button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: 0; padding: 4px; border-radius: 6px; font: 13px/1.3 var(--body); color: var(--ink); cursor: pointer; }
+.area-list button:hover, .area-list button:focus-visible { background: var(--chip); outline: none; }
+.area-list .empty { color: var(--muted); font-size: 12px; padding: 6px 4px; }
 
 /* ---------- markers ---------- */
 .pin { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
@@ -145,7 +154,9 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
 
 <aside class="panel collapsed" id="panel">
   <div class="brand"><h1>Tokyo Trip</h1><span class="jp">東京</span></div>
-  <div class="sub" id="subline">Tick or untick to show places on the map. Tap a pin for details.</div>
+  <div class="sub" id="subline">Pick an area, tick or untick types, and tap a pin for details.</div>
+  <div class="area-pick"><label for="area">Area</label><select id="area"></select></div>
+  <div class="area-list" id="area-list" hidden></div>
   <div id="filters"></div>
   <div class="panel-foot">
     <button type="button" id="all-on">Show all</button>
@@ -261,73 +272,148 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
       '</div>';
   }
 
-  // ---- build markers into one layer per sub-filter ----
-  const D = window.TRIP_DATA || { places: [], hotels: [] };
-  const layers = {}, counts = {};
-  Object.keys(SUB).forEach(k => { layers[k] = L.layerGroup(); counts[k] = 0; });
+  // ---- areas: every place belongs to the nearest neighbourhood centre ----
+  const AREAS = [
+    { key: 'akasaka', label: 'Akasaka & Nagatacho', c: [35.6740, 139.7370] },
+    { key: 'akihabara', label: 'Akihabara', c: [35.6995, 139.7715] },
+    { key: 'asakusa', label: 'Asakusa & Skytree', c: [35.7110, 139.8000] },
+    { key: 'ebisu', label: 'Ebisu & Nakameguro', c: [35.6440, 139.7040] },
+    { key: 'ginza', label: 'Ginza', c: [35.6717, 139.7650] },
+    { key: 'harajuku', label: 'Harajuku & Omotesando', c: [35.6690, 139.7080] },
+    { key: 'ikebukuro', label: 'Ikebukuro', c: [35.7295, 139.7160] },
+    { key: 'kichijoji', label: 'Kichijoji & Mitaka', c: [35.7020, 139.5750] },
+    { key: 'kiyosumi', label: 'Kiyosumi & Ryogoku', c: [35.6850, 139.7980] },
+    { key: 'maihama', label: 'Maihama & Kasai (Disney)', c: [35.6400, 139.8750] },
+    { key: 'marunouchi', label: 'Marunouchi & Tokyo Station', c: [35.6812, 139.7671] },
+    { key: 'nihonbashi', label: 'Nihonbashi', c: [35.6840, 139.7745] },
+    { key: 'odaiba', label: 'Odaiba & Toyosu', c: [35.6330, 139.7800] },
+    { key: 'roppongi', label: 'Roppongi & Azabu', c: [35.6590, 139.7300] },
+    { key: 'shibuya', label: 'Shibuya', c: [35.6595, 139.7005] },
+    { key: 'shimokita', label: 'Shimokitazawa', c: [35.6610, 139.6680] },
+    { key: 'shinagawa', label: 'Shinagawa', c: [35.6285, 139.7387] },
+    { key: 'shinjuku', label: 'Shinjuku', c: [35.6900, 139.7000] },
+    { key: 'toranomon', label: 'Toranomon & Kamiyacho', c: [35.6660, 139.7460] },
+    { key: 'ueno', label: 'Ueno & Yanaka', c: [35.7140, 139.7740] },
+    { key: 'yoyogi', label: 'Yoyogi & Tomigaya', c: [35.6680, 139.6900] }
+  ];
+  const FURTHER = { key: 'further', label: 'Further out (day trips)' };
+  const AREA_BY_KEY = {}; [...AREAS, FURTHER].forEach(a => AREA_BY_KEY[a.key] = a);
+  function areaOf(lat, lng) {
+    let best = FURTHER, bd = 2.6; // km; anything further from every centre is a day trip
+    AREAS.forEach(a => { const d = Math.hypot((lat - a.c[0]) * 111, (lng - a.c[1]) * 90.4); if (d < bd) { bd = d; best = a; } });
+    return best.key;
+  }
 
+  // ---- one entry per pin: marker, sub-filter, area ----
+  const D = window.TRIP_DATA || { places: [], hotels: [] };
+  const entries = [];
   function pinIcon(s, extra) {
     return L.divIcon({ className: '', iconSize: extra === 'hotel' ? [34, 34] : [28, 28],
       html: '<div class="pin ' + (extra || '') + '" style="background:' + s.color + '">' + ICON[s.icon] + '</div>' });
   }
   D.places.forEach(p => {
     const s = SUB[p.cat]; if (!s || p.lat == null) return;
-    L.marker([p.lat, p.lng], { icon: pinIcon(s), title: p.name, riseOnHover: true })
-      .bindPopup(placePopup(p), { maxWidth: 360, autoPanPadding: [20, 60] }).addTo(layers[p.cat]);
-    counts[p.cat]++;
+    const marker = L.marker([p.lat, p.lng], { icon: pinIcon(s), title: p.name, riseOnHover: true })
+      .bindPopup(placePopup(p), { maxWidth: 360, autoPanPadding: [20, 60] });
+    entries.push({ marker, sub: p.cat, area: areaOf(p.lat, p.lng), name: p.name });
   });
   D.hotels.forEach(h => {
     const k = h.stars >= 5 ? 'hotel5' : 'hotel4', s = SUB[k]; if (h.lat == null) return;
-    L.marker([h.lat, h.lng], { icon: pinIcon(s, 'hotel' + (h.fav ? ' fav' : '')), title: h.name, riseOnHover: true, zIndexOffset: 500 })
-      .bindPopup(hotelPopup(h), { maxWidth: 360, autoPanPadding: [20, 60] }).addTo(layers[k]);
-    counts[k]++;
+    const marker = L.marker([h.lat, h.lng], { icon: pinIcon(s, 'hotel' + (h.fav ? ' fav' : '')), title: h.name, riseOnHover: true, zIndexOffset: 500 })
+      .bindPopup(hotelPopup(h), { maxWidth: 360, autoPanPadding: [20, 60] });
+    entries.push({ marker, sub: k, area: areaOf(h.lat, h.lng), name: h.name });
   });
 
-  // ---- filter UI ----
+  // ---- state (remembered per viewer) ----
   const STORE = 'tokyo-trip-filters';
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch (e) { saved = {}; }
+  const on = {}; Object.keys(SUB).forEach(k => on[k] = saved[k] !== undefined ? saved[k] : true);
+  let area = AREA_BY_KEY[saved.area] ? saved.area : 'all';
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(Object.assign({ area }, on))); } catch (e) {} }
+
+  // ---- filter UI ----
   const box = document.getElementById('filters');
   GROUPS.forEach(g => {
-    const total = g.subs.reduce((n, s) => n + counts[s.key], 0);
     const el = document.createElement('div'); el.className = 'group';
-    el.innerHTML = '<label class="group-head"><input type="checkbox" id="g-' + g.key + '"> ' + g.label + '<span class="count">' + total + '</span></label>' +
+    el.innerHTML = '<label class="group-head"><input type="checkbox" id="g-' + g.key + '"> ' + g.label + '<span class="count" id="c-' + g.key + '"></span></label>' +
       '<div class="subs">' + g.subs.map(s =>
-        '<label><input type="checkbox" id="f-' + s.key + '" data-group="' + g.key + '">' +
+        '<label><input type="checkbox" id="f-' + s.key + '">' +
         '<span class="dot" style="background:' + s.color + '">' + ICON[s.icon] + '</span>' + s.label +
-        '<span class="count">' + counts[s.key] + '</span></label>').join('') + '</div>';
+        '<span class="count" id="c-' + s.key + '"></span></label>').join('') + '</div>';
     box.appendChild(el);
   });
+  const areaSel = document.getElementById('area'), areaList = document.getElementById('area-list');
+  const inArea = e => area === 'all' || e.area === area;
+  const areaCount = k => entries.filter(e => k === 'all' || e.area === k).length;
+  areaSel.innerHTML = '<option value="all">All of Tokyo (' + entries.length + ')</option>' +
+    [...AREAS, FURTHER].filter(a => areaCount(a.key)).map(a => '<option value="' + a.key + '">' + a.label + ' (' + areaCount(a.key) + ')</option>').join('');
+  areaSel.value = area;
+
   // kids + food pins share one cluster group (number bubbles when zoomed out); hotels always stand alone
   const cluster = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 45, disableClusteringAtZoom: 15,
     iconCreateFunction: c => L.divIcon({ className: '', iconSize: [38, 38], html: '<div class="cluster">' + c.getChildCount() + '</div>' }) }).addTo(map);
-  const shown = {};
-  function apply(key, on) {
-    const cb = document.getElementById('f-' + key); cb.checked = on;
-    if (!!shown[key] === on) return;
-    shown[key] = on;
-    if (SUB[key].group === 'stay') { if (on) layers[key].addTo(map); else map.removeLayer(layers[key]); }
-    else if (on) cluster.addLayers(layers[key].getLayers()); else cluster.removeLayers(layers[key].getLayers());
-  }
-  function syncGroups() {
+  const stay = L.layerGroup().addTo(map);
+
+  function refresh() {
+    cluster.clearLayers(); stay.clearLayers();
+    const vis = entries.filter(e => on[e.sub] && inArea(e));
+    cluster.addLayers(vis.filter(e => SUB[e.sub].group !== 'stay').map(e => e.marker));
+    vis.filter(e => SUB[e.sub].group === 'stay').forEach(e => stay.addLayer(e.marker));
+    // counts show what the chosen area holds
     GROUPS.forEach(g => {
-      const on = g.subs.filter(s => document.getElementById('f-' + s.key).checked).length;
+      let n = 0, ticked = 0;
+      g.subs.forEach(s => {
+        const c = entries.filter(e => e.sub === s.key && inArea(e)).length; n += c;
+        document.getElementById('c-' + s.key).textContent = c;
+        document.getElementById('f-' + s.key).checked = on[s.key]; if (on[s.key]) ticked++;
+      });
+      document.getElementById('c-' + g.key).textContent = n;
       const gc = document.getElementById('g-' + g.key);
-      gc.checked = on === g.subs.length; gc.indeterminate = on > 0 && on < g.subs.length;
+      gc.checked = ticked === g.subs.length; gc.indeterminate = ticked > 0 && ticked < g.subs.length;
     });
-    const state = {}; Object.keys(SUB).forEach(k => state[k] = document.getElementById('f-' + k).checked);
-    try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
+    renderList(vis);
+    save();
   }
-  Object.keys(SUB).forEach(k => {
-    apply(k, saved[k] !== undefined ? saved[k] : true);
-    document.getElementById('f-' + k).addEventListener('change', e => { apply(k, e.target.checked); syncGroups(); });
-  });
-  GROUPS.forEach(g => document.getElementById('g-' + g.key).addEventListener('change', e => {
-    g.subs.forEach(s => apply(s.key, e.target.checked)); syncGroups();
+
+  // list of what is in the chosen area, by type; tap a name to open its pin
+  function renderList(vis) {
+    areaList.hidden = area === 'all';
+    if (area === 'all') return;
+    areaList.innerHTML = '';
+    if (!vis.length) { areaList.innerHTML = '<div class="empty">Nothing ticked in this area. Tick more types below.</div>'; return; }
+    GROUPS.forEach(g => g.subs.forEach(s => {
+      const items = vis.filter(e => e.sub === s.key);
+      if (!items.length) return;
+      const h = document.createElement('h4'); h.textContent = s.label; areaList.appendChild(h);
+      items.forEach(e => {
+        const b = document.createElement('button'); b.type = 'button';
+        b.innerHTML = '<span class="dot" style="background:' + s.color + '">' + ICON[s.icon] + '</span>' + esc(e.name);
+        b.onclick = () => openEntry(e);
+        areaList.appendChild(b);
+      });
+    }));
+  }
+  function openEntry(e) {
+    if (matchMedia('(max-width: 640px)').matches) { panel.classList.add('collapsed'); tog.textContent = 'Filters'; }
+    // jump (no animation) to a zoom where pins are never grouped, then open the pop-up
+    map.setView(e.marker.getLatLng(), Math.max(map.getZoom(), 16), { animate: false });
+    e.marker.openPopup();
+  }
+  function fitArea() {
+    let pts = entries.filter(e => inArea(e) && on[e.sub]);
+    if (!pts.length) pts = entries.filter(inArea);
+    if (area === 'all') pts = pts.filter(e => { const p = e.marker.getLatLng(); return p.lat > 35.55 && p.lat < 35.8 && p.lng > 139.55 && p.lng < 139.95; });
+    if (pts.length) map.fitBounds(L.latLngBounds(pts.map(e => e.marker.getLatLng())), { padding: [50, 50], maxZoom: 16, animate: false });
+  }
+
+  Object.keys(SUB).forEach(k => document.getElementById('f-' + k).addEventListener('change', ev => { on[k] = ev.target.checked; refresh(); }));
+  GROUPS.forEach(g => document.getElementById('g-' + g.key).addEventListener('change', ev => {
+    g.subs.forEach(s => on[s.key] = ev.target.checked); refresh();
   }));
-  document.getElementById('all-on').onclick = () => { Object.keys(SUB).forEach(k => apply(k, true)); syncGroups(); };
-  document.getElementById('all-off').onclick = () => { Object.keys(SUB).forEach(k => apply(k, false)); syncGroups(); };
-  syncGroups();
+  document.getElementById('all-on').onclick = () => { Object.keys(SUB).forEach(k => on[k] = true); refresh(); };
+  document.getElementById('all-off').onclick = () => { Object.keys(SUB).forEach(k => on[k] = false); refresh(); };
+  areaSel.addEventListener('change', () => { area = areaSel.value; refresh(); fitArea(); });
   if (D.updated) document.getElementById('updated').textContent = 'Research updated ' + D.updated + '.';
 
   // ---- panel open/closed (closed by default on phones only) ----
@@ -335,9 +421,8 @@ input[type=checkbox]:focus-visible { outline: 2px solid var(--accent); outline-o
   if (!matchMedia('(max-width: 640px)').matches) panel.classList.remove('collapsed');
   tog.onclick = () => { panel.classList.toggle('collapsed'); tog.textContent = panel.classList.contains('collapsed') ? 'Filters' : 'Close'; };
 
-  // fit to everything once
-  const all = [...D.places, ...D.hotels].filter(p => p.lat != null && p.lat > 35.55 && p.lat < 35.8 && p.lng > 139.55 && p.lng < 139.95);
-  if (all.length) map.fitBounds(L.latLngBounds(all.map(p => [p.lat, p.lng])), { padding: [40, 40] });
+  refresh();
+  fitArea();
 })();
 </script>
 </body>
